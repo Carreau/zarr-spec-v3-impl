@@ -5,6 +5,7 @@ Zarr spec v3 draft implementation
 __version__ = "0.0.1"
 
 from string import ascii_letters, digits
+
 import trio
 
 
@@ -110,4 +111,3 @@ class ZarrProtocolV3:
         }  }
         """
         await self._store.set(self._g_meta_key(group_path), DEFAULT_GROUP.encode())
-

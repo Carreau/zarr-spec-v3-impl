@@ -1,6 +1,5 @@
-from zarr3 import MemoryStoreV3, ZarrProtocolV3
-
 import pytest
+from zarr3 import MemoryStoreV3, ZarrProtocolV3
 
 
 async def test_scenario():
