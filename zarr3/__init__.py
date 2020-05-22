@@ -90,3 +90,24 @@ class ZarrProtocolV3:
         """
         await self._store.set(self._g_meta_key(group_path), DEFAULT_GROUP.encode())
 
+    async def create_array(self, group_path: str):
+        """
+        create a goup at `group_path`, 
+        we need to make sure none of the subpath of group_path are arrays. 
+
+        say  path is g1/g2/g3, we want to check
+
+        /meta/g1.array
+        /meta/g1/g2.array
+
+        we could also assume that protocol implementation never do that.
+        """
+        DEFAULT_GROUP = """{
+                "extensions": [],
+        "attributes": {
+            "spam": "ham",
+            "eggs": 42,
+        }  }
+        """
+        await self._store.set(self._g_meta_key(group_path), DEFAULT_GROUP.encode())
+
