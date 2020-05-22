@@ -13,7 +13,7 @@ async def test_scenario():
     with pytest.raises(ValueError):
         await store.get("data")
     with pytest.raises(ValueError):
-        await store.get("meta")
+        await store.get("meta")  # test commit
 
     assert await store.get("data/a") == bytes(1)
 
@@ -22,9 +22,9 @@ async def test_scenario():
     await store.set("meta/this/also/a/group", bytes(1))
     await store.set("meta/thisisweird/also/a/group", bytes(1))
 
-    assert len(store.list()) == 5
+    assert len(await store.list()) == 5
 
-    assert store.list_dir("meta/this") == ["meta/this", "meta/thisisweird"]
+    assert await store.list_dir("meta/this") == ["meta/this", "meta/thisisweird"]
 
 
 async def test_2():

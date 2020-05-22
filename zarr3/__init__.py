@@ -42,21 +42,21 @@ class MemoryStoreV3:
         assert self._valid_path(key)
         self._backend[key] = value
 
-    def delete(self, key):
+    async def delete(self, key):
         del self._backend[key]
 
-    def list(self):
+    async def list(self):
         return list(self._backend.keys())
 
-    def list_prefix(self, prefix):
-        return [k for k in self.list() if k.startswith(prefix)]
+    async def list_prefix(self, prefix):
+        return [k for k in await self.list() if k.startswith(prefix)]
 
-    def list_dir(self, prefix):
+    async def list_dir(self, prefix):
         """
         Note: carefully test this with trailing/leading slashes
         """
 
-        all_keys = self.list_prefix(prefix)
+        all_keys = await self.list_prefix(prefix)
         len_prefix = len(prefix)
         trail = {k[len_prefix:].split("/", maxsplit=1)[0] for k in all_keys}
         return [prefix + k for k in trail]
