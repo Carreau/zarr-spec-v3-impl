@@ -16,7 +16,6 @@ def nested_run():
     if hasattr(GLOBAL_RUN_CONTEXT, 'runner'):
         runner = GLOBAL_RUN_CONTEXT.runner
         del GLOBAL_RUN_CONTEXT.runner
-    print('!!!', dir(GLOBAL_RUN_CONTEXT))
     
     try:
         yield 
@@ -50,7 +49,6 @@ class AutoSync:
                         
                         See {attr} documentation.
                         """
-                        print(self, args, kwargs)
                         import trio
                         with nested_run():
                             return trio.run(meth, self, *args)
