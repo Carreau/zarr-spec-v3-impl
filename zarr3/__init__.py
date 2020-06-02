@@ -39,10 +39,7 @@ class MemoryStoreV3(AutoSync):
         return result
 
     async def async_set(self, key: str, value: bytes):
-        import array
-        import numpy as np
-
-        if not isinstance(value, (bytes, bytearray, array.array, np.ndarray)):
+        if not isinstance(value, bytes):
             raise TypeError(f"expected, bytes, or bytesarray, got {type(value)}")
         assert self._valid_path(key)
         self._backend[key] = value
@@ -153,19 +150,118 @@ class ZarrProtocolV3(AutoSync):
 
 
 from collections.abc import MutableMapping
+
+class StoreComparer(MutableMapping):
+    """
+    Compare two store implementations, and make sure to do the same operation on both stores. 
+
+    The operation from the first store are always considered as reference and
+    the will make sure the second store will return the same value, or raise
+    the same exception where relevant.
+
+    This should have minimal impact on API, but can as some generators are reified and sorted to make sure they are identical.
+    """
+
+
+    def __init__(self, reference, tested):
+        self.reference = reference
+        self.tested = tested
+
+    def __getitem__(self, key):
+        try :
+            k1 = self.reference[key]
+        except Exception as e1:
+            try:
+                k2 = self.tested[key]
+                assert False, "should raise"
+            except Exception as e2:
+                assert isinstance(e2, type(e1))
+            raise
+        k2 = self.tested[key]
+        assert k2 == k1
+        return k1
+
+    def __setitem__(self, key, value):
+        # todo : not quite happy about casting here, maybe we shoudl stay strict ? 
+        from numcodecs.compat import ensure_bytes
+        values = ensure_bytes(value)
+        try:
+            self.reference[key] = value
+        except Exception as e:
+            try: 
+                self.tested[key] = value
+            except Exception as e2:
+                assert isinstance(e, type(e2))
+        try:
+            self.tested[key] = value
+        except Exception as e:
+            assert False, f"should not raise, got {e}"
+
+    def keys(self):
+        try :
+            k1 = list(sorted(self.reference.keys()))
+        except Exception as e1:
+            try:
+                k2 = self.tested.keys()
+                assert False, "should raise"
+            except Exception as e2:
+                assert isinstance(e2, type(e1))
+            raise
+        k2 = sorted(self.tested.keys())
+        assert k2 == k1, f"got {k2}, expecting {k1}"
+        return k1
+
+    def __delitem__(self, key):
+        try :
+            del self.reference[key]
+        except Exception as e1:
+            try:
+                del self.tested[key]
+                assert False, "should raise"
+            except Exception as e2:
+                assert isinstance(e2, type(e1))
+            raise
+        del self.tested[key]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self):
+        return len(self.keys())
+
+
 class V2from3Adapter(MutableMapping):
     """
     class to wrap a 3 store and return a V2 interface
     """
 
-    def __init__(self, v3store: MemoryStoreV3):
-        self._v3store: MemoryStoreV3 = v3store
+    def __init__(self, v3store):
+        """
+
+        Wrapper arround a v3store to give a v2 compatible interface. 
+
+        Still have some rough edges, and try to do the sensible things for
+        most case mostly key converstions so far.
+
+        Note that the V3 spec is still in flux, so this is simply a prototype
+        to see the pain points in using the spec v3 and must not be used for
+        production.
+
+
+        This will try to do the followign conversions: 
+         - name of given keys `.zgroup` -> `.group` for example. 
+         - path of storage (prefix with root/ meta// when relevant and vice versa.)
+         - try to ensure the stored objects are bytes before reachign the underlying store. 
+         - try to adapt v2/v2 nested/flatt structures
+
+        """
+        self._v3store = v3store
 
     def __getitem__(self, key):
         """
         In v2  both metadata and data are mixed so we'll need to convert things that ends with .z to the metadata path.
         """
-        assert isinstance(key, str), f"expecting strings got {key!r}"
+        assert isinstance(key, str), f"expecting string got {key!r}"
         res = self._v3store.get(self._convert_2_to_3_keys(key))
         assert isinstance(res, bytes)
         return res
@@ -186,6 +282,10 @@ class V2from3Adapter(MutableMapping):
         """
         todo handle special .attribute which is merged with .zarray
         """
+        if v3key == 'meta/root.group':
+            return '.zgroup'
+        if v3key == 'meta/root.array':
+            return '.zarray'
         suffix = v3key[10:]
         if suffix.endswith('.array'):
             return suffix[:-6] + '.zarray'
@@ -197,6 +297,11 @@ class V2from3Adapter(MutableMapping):
         """
         todo handle special .attribute which is merged with .zarray
         """
+        # head of the hierachy is different:
+        if v2key == '.zgroup':
+            return 'meta/root.group'
+        if v2key == '.zarray':
+            return 'meta/root.array'
         assert not v2key.startswith(
             '/'), f"expect keys to not start with slash but does {v2key!r}"
         if v2key.endswith('.zarray'):
@@ -241,10 +346,10 @@ class V2from3Adapter(MutableMapping):
     def __iter__(self):
         return iter(self.keys())
 
-    def values(self):
-        for k in self.keys():
-            yield self[k]
+    #def values(self):
+    #    for k in self.keys():
+    #        yield self[k]
 
-    def items(self):
-        for k in self.keys():
-            yield k, self[k]
+    #def items(self):
+    #    for k in self.keys():
+    #        yield k, self[k]
