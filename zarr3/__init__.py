@@ -9,12 +9,10 @@ from .utils import AutoSync
 
 import json
 
+class BaseV3Store(AutoSync):
 
-class MemoryStoreV3(AutoSync):
-    def __init__(self):
-        self._backend = dict()
-
-    def _valid_path(self, key: str) -> bool:
+    @staticmethod
+    def _valid_path(key: str) -> bool:
         """
         A key us any string containing only character in the range a-z, A-Z, 0-9, or in the set /.-_
         """
@@ -34,8 +32,8 @@ class MemoryStoreV3(AutoSync):
 
     async def async_get(self, key: str):
         assert self._valid_path(key)
-        result = self._backend[key]
-        assert isinstance(result, bytes)
+        result = await self._get(key)
+        assert isinstance(result, bytes), f"Expected bytes, got {result}"
         return result
 
     async def async_set(self, key: str, value: bytes):
@@ -45,16 +43,67 @@ class MemoryStoreV3(AutoSync):
         if not isinstance(value, bytes):
             raise TypeError(f"expected, bytes, or bytesarray, got {type(value)}")
         assert self._valid_path(key)
-        self._backend[key] = value
+        await self._set(key, value)
+
+    async def async_initialize(self):
+        pass
+
+    async def async_list_prefix(self, prefix):
+        return [k for k in await self.async_list() if k.startswith(prefix)]
+
+    async def async_delete(self, key):
+        deln = await self._backend().delete(key)
+        if deln == 0:
+            raise KeyError(key)
+
+
+
+
+class RedisStore(BaseV3Store):
+    def __init__(self):
+        """initialisation is in _async initialize
+        for early failure.
+        """
+        pass
+
+    async def async_initialize(self):
+        from redio import Redis
+        self._backend = Redis("redis://localhost/")
+        b = self._backend()
+        for k in await self._backend().keys():
+            b.delete(k)
+        await b
+
+
+    async def _get(self, key):
+        res = await self._backend().get(key)
+        if res is None:
+            raise KeyError
+        return res
+
+    async def _set(self, key, value):
+        return await self._backend().set(key, value)
+
+    async def async_list(self):
+        return await self._backend().keys()
+
+class MemoryStoreV3(BaseV3Store):
+
+
+    def __init__(self):
+        self._backend = dict()
+
+    async def _get(self, key):
+        return self._backend[key]
+
+    async def _set(self, key, value):
+        self._backend[key]  = value
 
     async def async_delete(self, key):
         del self._backend[key]
 
     async def async_list(self):
         return list(self._backend.keys())
-
-    async def async_list_prefix(self, prefix):
-        return [k for k in await self.async_list() if k.startswith(prefix)]
 
     async def async_list_dir(self, prefix):
         """
@@ -175,9 +224,11 @@ class StoreComparer(MutableMapping):
         except Exception as e1:
             try:
                 k2 = self.tested[key]
-                assert False, "should raise"
+                assert False, f"should raise, got {k2} for {key}"
             except Exception as e2:
-                assert isinstance(e2, type(e1))
+                raise
+                if not isinstance(e2, type(e1)):
+                    raise AssertionError("Expecting {type(e1)} got {type(e2)}") from e2
             raise
         k2 = self.tested[key]
         if key.endswith('.zgroup'):
