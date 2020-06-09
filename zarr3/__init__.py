@@ -10,11 +10,25 @@ from .utils import AutoSync
 import json
 
 class BaseV3Store(AutoSync):
+    """
+    Base utility class to create a v3-complient store with extra checks and utilities. 
+
+    It provides a number of default method implementation adding extra checks in order to ensure the correctness fo the implmentation.
+    """
 
     @staticmethod
     def _valid_path(key: str) -> bool:
         """
-        A key us any string containing only character in the range a-z, A-Z, 0-9, or in the set /.-_
+        Verify that a key is confirm to the specification. 
+
+        A key us any string containing only character in the range a-z, A-Z,
+        0-9, or in the set /.-_ it will return True if that's the case, false
+        otherwise.
+
+        In addition, in spec v3, keys can only start with the prefix meta/,
+        data/ or be exactly zarr.json. This should not be exposed to the
+        user, and is a store implmentation detail, so thie method will raise
+        a ValueError in that case.
         """
         if not key.isascii():
             return False
@@ -31,12 +45,31 @@ class BaseV3Store(AutoSync):
         return True
 
     async def async_get(self, key: str):
+        """
+        default implementation of async_get/get that validate the key, and
+        check that the return value by bytes. rely on `async def _get(key)`
+        to be implmented.
+
+        Will ensure that the following are correct:
+            - return group metadata objects are json and contain a signel `attributes` keys.
+        """
         assert self._valid_path(key)
         result = await self._get(key)
         assert isinstance(result, bytes), f"Expected bytes, got {result}"
+        if key.endswith('/.group'):
+            v= json.loads(result.decode())
+            assert set(v.keys()) ==  {'attributes'}, f"got unexpected keys {v.keys()}"
         return result
 
     async def async_set(self, key: str, value: bytes):
+        """
+        default implementation of async_set/set that validate the key, and
+        check that the return value by bytes. rely on `async def _set(key, value)`
+        to be implmented.
+
+        Will ensure that the following are correct:
+            - set group metadata objects are json and contain a signel `attributes` keys.
+        """
         if key.endswith('/.group'):
             v= json.loads(value.decode())
             assert set(v.keys()) ==  {'attributes'}, f"got unexpected keys {v.keys()}"
@@ -46,6 +79,12 @@ class BaseV3Store(AutoSync):
         await self._set(key, value)
 
     async def async_initialize(self):
+        """
+        Default implementation to initilize async store. 
+
+        Async store may need to do asyncronous initialisation, but this is not possible in `__init__` which is sync.
+
+        """
         pass
 
     async def async_list_prefix(self, prefix):
@@ -65,6 +104,16 @@ class RedisStore(BaseV3Store):
         for early failure.
         """
         pass
+
+    def __getstate__(self):
+        return {}
+
+    def __setstate__(self, state):
+        self.__init__()
+        from redio import Redis
+        self._backend = Redis("redis://localhost/")
+
+
 
     async def async_initialize(self):
         from redio import Redis
