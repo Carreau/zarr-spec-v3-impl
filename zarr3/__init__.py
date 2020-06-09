@@ -39,7 +39,7 @@ class MemoryStoreV3(AutoSync):
         return result
 
     async def async_set(self, key: str, value: bytes):
-        if key.endswith('.group'):
+        if key.endswith('/.group'):
             v= json.loads(value.decode())
             assert set(v.keys()) ==  {'attributes'}, f"got unexpected keys {v.keys()}"
         if not isinstance(value, bytes):
@@ -272,7 +272,11 @@ class V2from3Adapter(MutableMapping):
         assert isinstance(key, str), f"expecting string got {key!r}"
         v3key = self._convert_2_to_3_keys(key)
         res = self._v3store.get(v3key)
-        if v3key.endswith('.group'):
+        if v3key == 'meta/root.group':
+            data = json.loads(res.decode())
+            data['zarr_format'] = 2
+            res = json.dumps(data, indent=4).encode()
+        elif v3key.endswith('/.group'):
             data = json.loads(res.decode())
             data['zarr_format'] = 2
             if not data['attributes']:
@@ -289,7 +293,11 @@ class V2from3Adapter(MutableMapping):
         from numcodecs.compat import ensure_bytes
         parts = key.split('/')
         v3key = self._convert_2_to_3_keys(key)
-        if v3key.endswith('.group'):
+        if v3key == 'meta/root.group':
+            data = json.loads(value.decode())
+            data['zarr_format'] = "https://purl.org/zarr/spec/protocol/core/3.0"
+            data = json.dumps(data, indent=4).encode()
+        elif v3key.endswith('/.group'):
             data = json.loads(value.decode())
             del data['zarr_format']
             if 'attributes' not in data:

@@ -45,5 +45,5 @@ def test_misc():
     
     init_group(store)
     
-    assert store._v3store._backend ==  {'meta/root.group': b'{\n    "zarr_format": 2\n}'}
+    assert store._v3store._backend ==  {'meta/root.group': b'{\n    "zarr_format": "https://purl.org/zarr/spec/protocol/core/3.0"\n}'}
     assert store['.zgroup'] ==  b'{\n    "zarr_format": 2\n}'
