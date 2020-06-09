@@ -39,6 +39,9 @@ class MemoryStoreV3(AutoSync):
         return result
 
     async def async_set(self, key: str, value: bytes):
+        if key.endswith('.group'):
+            v= json.loads(value.decode())
+            assert set(v.keys()) ==  {'attributes'}, f"got unexpected keys {v.keys()}"
         if not isinstance(value, bytes):
             raise TypeError(f"expected, bytes, or bytesarray, got {type(value)}")
         assert self._valid_path(key)
@@ -102,7 +105,6 @@ class ZarrProtocolV3(AutoSync):
         we could also assume that protocol implementation never do that.
         """
         DEFAULT_GROUP = """{
-                "extensions": [],
         "attributes": {
             "spam": "ham",
             "eggs": 42,
@@ -178,7 +180,10 @@ class StoreComparer(MutableMapping):
                 assert isinstance(e2, type(e1))
             raise
         k2 = self.tested[key]
-        assert k2 == k1
+        if key.endswith('.zgroup'):
+            assert json.loads(k1.decode()) == json.loads(k2.decode())
+        else:
+            assert k2 == k1 , f"{k1} != {k2}"
         return k1
 
     def __setitem__(self, key, value):
@@ -195,6 +200,7 @@ class StoreComparer(MutableMapping):
         try:
             self.tested[key] = value
         except Exception as e:
+            raise
             assert False, f"should not raise, got {e}"
 
     def keys(self):
@@ -252,7 +258,9 @@ class V2from3Adapter(MutableMapping):
          - name of given keys `.zgroup` -> `.group` for example. 
          - path of storage (prefix with root/ meta// when relevant and vice versa.)
          - try to ensure the stored objects are bytes before reachign the underlying store. 
-         - try to adapt v2/v2 nested/flatt structures
+         - try to adapt v2/v2 nested/flat structures
+
+        THere will ikley need to be _some_
 
         """
         self._v3store = v3store
@@ -262,18 +270,34 @@ class V2from3Adapter(MutableMapping):
         In v2  both metadata and data are mixed so we'll need to convert things that ends with .z to the metadata path.
         """
         assert isinstance(key, str), f"expecting string got {key!r}"
-        res = self._v3store.get(self._convert_2_to_3_keys(key))
+        v3key = self._convert_2_to_3_keys(key)
+        res = self._v3store.get(v3key)
+        if v3key.endswith('.group'):
+            data = json.loads(res.decode())
+            data['zarr_format'] = 2
+            if not data['attributes']:
+                del data['attributes']
+            res = json.dumps(data).encode()
         assert isinstance(res, bytes)
         return res
 
-    def __setitem__(self, item, value):
+    def __setitem__(self, key, value):
         """
         In v2  both metadata and data are mixed so we'll need to convert things that ends with .z to the metadata path.
         """
         # TODO convert to bytes if needed
         from numcodecs.compat import ensure_bytes
-        parts = item.split('/')
-        self._v3store.set(self._convert_2_to_3_keys(item), ensure_bytes(value))
+        parts = key.split('/')
+        v3key = self._convert_2_to_3_keys(key)
+        if v3key.endswith('.group'):
+            data = json.loads(value.decode())
+            del data['zarr_format']
+            if 'attributes' not in data:
+                data['attributes'] = {}
+            data = json.dumps(data).encode()
+        else:
+            data = value
+        self._v3store.set(v3key, ensure_bytes(data))
 
     def __contains__(self, key):
         return self._convert_2_to_3_keys(key) in self._v3store.list()
