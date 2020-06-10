@@ -194,7 +194,7 @@ class ZarrProtocolV3(AutoSync):
         try:
             self._store.get("zarr.json")
         except KeyError:
-            self._store.set("zarr.json", json.dumps("basic_info").encode())
+            self._store.set("zarr.json", json.dumps(basic_info).encode())
 
     def _g_meta_key(self, key):
         return "meta/" + key + ".group"
