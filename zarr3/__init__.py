@@ -9,6 +9,7 @@ from .utils import AutoSync
 
 import json
 
+
 class BaseV3Store(AutoSync):
     """
     Base utility class to create a v3-complient store with extra checks and utilities. 
@@ -56,9 +57,17 @@ class BaseV3Store(AutoSync):
         assert self._valid_path(key)
         result = await self._get(key)
         assert isinstance(result, bytes), f"Expected bytes, got {result}"
-        if key.endswith('/.group'):
-            v= json.loads(result.decode())
-            assert set(v.keys()) ==  {'attributes'}, f"got unexpected keys {v.keys()}"
+        if key == "zarr.json":
+            v = json.loads(value.decode())
+            assert set(v.keys()) == {
+                "zarr_format",
+                "metadata_encoding",
+                "extensions",
+            }, f"v is {v}"
+
+        if key.endswith("/.group"):
+            v = json.loads(result.decode())
+            assert set(v.keys()) == {"attributes"}, f"got unexpected keys {v.keys()}"
         return result
 
     async def async_set(self, key: str, value: bytes):
@@ -70,9 +79,17 @@ class BaseV3Store(AutoSync):
         Will ensure that the following are correct:
             - set group metadata objects are json and contain a signel `attributes` keys.
         """
-        if key.endswith('/.group'):
-            v= json.loads(value.decode())
-            assert set(v.keys()) ==  {'attributes'}, f"got unexpected keys {v.keys()}"
+        if key == "zarr.json":
+            v = json.loads(value.decode())
+            assert set(v.keys()) == {
+                "zarr_format",
+                "metadata_encoding",
+                "extensions",
+            }, f"v is {v}"
+
+        if key.endswith("/.group"):
+            v = json.loads(value.decode())
+            assert set(v.keys()) == {"attributes"}, f"got unexpected keys {v.keys()}"
         if not isinstance(value, bytes):
             raise TypeError(f"expected, bytes, or bytesarray, got {type(value)}")
         assert self._valid_path(key)
@@ -96,8 +113,6 @@ class BaseV3Store(AutoSync):
             raise KeyError(key)
 
 
-
-
 class RedisStore(BaseV3Store):
     def __init__(self):
         """initialisation is in _async initialize
@@ -111,18 +126,17 @@ class RedisStore(BaseV3Store):
     def __setstate__(self, state):
         self.__init__()
         from redio import Redis
+
         self._backend = Redis("redis://localhost/")
-
-
 
     async def async_initialize(self):
         from redio import Redis
+
         self._backend = Redis("redis://localhost/")
         b = self._backend()
         for k in await self._backend().keys():
             b.delete(k)
         await b
-
 
     async def _get(self, key):
         res = await self._backend().get(key)
@@ -136,9 +150,8 @@ class RedisStore(BaseV3Store):
     async def async_list(self):
         return await self._backend().keys()
 
+
 class MemoryStoreV3(BaseV3Store):
-
-
     def __init__(self):
         self._backend = dict()
 
@@ -146,7 +159,7 @@ class MemoryStoreV3(BaseV3Store):
         return self._backend[key]
 
     async def _set(self, key, value):
-        self._backend[key]  = value
+        self._backend[key] = value
 
     async def async_delete(self, key):
         del self._backend[key]
@@ -160,15 +173,14 @@ class MemoryStoreV3(BaseV3Store):
         """
 
         all_keys = await self.async_list_prefix(prefix)
-        print('store:', self._backend)
-        print('all keys', all_keys)
+        print("store:", self._backend)
+        print("all keys", all_keys)
         len_prefix = len(prefix)
         trail = {k[len_prefix:].split("/", maxsplit=1)[0] for k in all_keys}
         return [prefix + k for k in trail]
 
 
 class ZarrProtocolV3(AutoSync):
-
     def __init__(self, store=MemoryStoreV3):
         self._store = store()
         self.init_hierarchy()
@@ -177,18 +189,18 @@ class ZarrProtocolV3(AutoSync):
         basic_info = {
             "zarr_format": "https://purl.org/zarr/spec/protocol/core/3.0",
             "metadata_encoding": "application/json",
-            "extensions": []
+            "extensions": [],
         }
         try:
-            self._store.get('zarr.json')
+            self._store.get("zarr.json")
         except KeyError:
-            self._store.set('zarr.json', json.dumps('basic_info').encode())
+            self._store.set("zarr.json", json.dumps("basic_info").encode())
 
     def _g_meta_key(self, key):
-        return 'meta/'+key+'.group'
+        return "meta/" + key + ".group"
 
     def _a_meta_key(self, key):
-        return 'meta/'+key+'.array'
+        return "meta/" + key + ".array"
 
     async def async_create_group(self, group_path: str):
         """
@@ -208,15 +220,15 @@ class ZarrProtocolV3(AutoSync):
             "eggs": 42,
         }  }
         """
-        await self._store.async_set(self._g_meta_key(group_path), DEFAULT_GROUP.encode())
+        await self._store.async_set(
+            self._g_meta_key(group_path), DEFAULT_GROUP.encode()
+        )
 
-    def _create_array_metadata(self, shape=(10, ), dtype='<f64', chunk_shape=(1,)):
+    def _create_array_metadata(self, shape=(10,), dtype="<f64", chunk_shape=(1,)):
         metadata = {
             "shape": shape,
             "data_type": dtype,
-            "chunk_grid": {"type": "regular",
-                           "chunk_shape":  chunk_shape
-                           },
+            "chunk_grid": {"type": "regular", "chunk_shape": chunk_shape},
             "chunk_memory_layout": "C",
             "compressor": {
                 "codec": "https://none",
@@ -224,7 +236,7 @@ class ZarrProtocolV3(AutoSync):
                 "fill_value": "NaN",
             },
             "extensions": [],
-            "attributes": {}
+            "attributes": {},
         }
 
     async def create_array(self, array_path: str):
@@ -251,6 +263,7 @@ class ZarrProtocolV3(AutoSync):
 
 from collections.abc import MutableMapping
 
+
 class StoreComparer(MutableMapping):
     """
     Compare two store implementations, and make sure to do the same operation on both stores. 
@@ -262,13 +275,12 @@ class StoreComparer(MutableMapping):
     This should have minimal impact on API, but can as some generators are reified and sorted to make sure they are identical.
     """
 
-
     def __init__(self, reference, tested):
         self.reference = reference
         self.tested = tested
 
     def __getitem__(self, key):
-        try :
+        try:
             k1 = self.reference[key]
         except Exception as e1:
             try:
@@ -280,20 +292,21 @@ class StoreComparer(MutableMapping):
                     raise AssertionError("Expecting {type(e1)} got {type(e2)}") from e2
             raise
         k2 = self.tested[key]
-        if key.endswith('.zgroup'):
+        if key.endswith(".zgroup"):
             assert json.loads(k1.decode()) == json.loads(k2.decode())
         else:
-            assert k2 == k1 , f"{k1} != {k2}"
+            assert k2 == k1, f"{k1} != {k2}"
         return k1
 
     def __setitem__(self, key, value):
-        # todo : not quite happy about casting here, maybe we shoudl stay strict ? 
+        # todo : not quite happy about casting here, maybe we shoudl stay strict ?
         from numcodecs.compat import ensure_bytes
+
         values = ensure_bytes(value)
         try:
             self.reference[key] = value
         except Exception as e:
-            try: 
+            try:
                 self.tested[key] = value
             except Exception as e2:
                 assert isinstance(e, type(e2))
@@ -304,7 +317,7 @@ class StoreComparer(MutableMapping):
             assert False, f"should not raise, got {e}"
 
     def keys(self):
-        try :
+        try:
             k1 = list(sorted(self.reference.keys()))
         except Exception as e1:
             try:
@@ -318,7 +331,7 @@ class StoreComparer(MutableMapping):
         return k1
 
     def __delitem__(self, key):
-        try :
+        try:
             del self.reference[key]
         except Exception as e1:
             try:
@@ -372,15 +385,15 @@ class V2from3Adapter(MutableMapping):
         assert isinstance(key, str), f"expecting string got {key!r}"
         v3key = self._convert_2_to_3_keys(key)
         res = self._v3store.get(v3key)
-        if v3key == 'meta/root.group':
+        if v3key == "meta/root.group":
             data = json.loads(res.decode())
-            data['zarr_format'] = 2
+            data["zarr_format"] = 2
             res = json.dumps(data, indent=4).encode()
-        elif v3key.endswith('/.group'):
+        elif v3key.endswith("/.group"):
             data = json.loads(res.decode())
-            data['zarr_format'] = 2
-            if not data['attributes']:
-                del data['attributes']
+            data["zarr_format"] = 2
+            if not data["attributes"]:
+                del data["attributes"]
             res = json.dumps(data).encode()
         assert isinstance(res, bytes)
         return res
@@ -391,17 +404,19 @@ class V2from3Adapter(MutableMapping):
         """
         # TODO convert to bytes if needed
         from numcodecs.compat import ensure_bytes
-        parts = key.split('/')
+
+        parts = key.split("/")
         v3key = self._convert_2_to_3_keys(key)
-        if v3key == 'meta/root.group':
+        if v3key == "meta/root.group":
+            # todo: this is wrong, the top md document is zarr.json.
             data = json.loads(value.decode())
-            data['zarr_format'] = "https://purl.org/zarr/spec/protocol/core/3.0"
+            data["zarr_format"] = "https://purl.org/zarr/spec/protocol/core/3.0"
             data = json.dumps(data, indent=4).encode()
-        elif v3key.endswith('/.group'):
+        elif v3key.endswith("/.group"):
             data = json.loads(value.decode())
-            del data['zarr_format']
-            if 'attributes' not in data:
-                data['attributes'] = {}
+            del data["zarr_format"]
+            if "attributes" not in data:
+                data["attributes"] = {}
             data = json.dumps(data).encode()
         else:
             data = value
@@ -414,15 +429,15 @@ class V2from3Adapter(MutableMapping):
         """
         todo handle special .attribute which is merged with .zarray
         """
-        if v3key == 'meta/root.group':
-            return '.zgroup'
-        if v3key == 'meta/root.array':
-            return '.zarray'
+        if v3key == "meta/root.group":
+            return ".zgroup"
+        if v3key == "meta/root.array":
+            return ".zarray"
         suffix = v3key[10:]
-        if suffix.endswith('.array'):
-            return suffix[:-6] + '.zarray'
-        if suffix.endswith('.group'):
-            return suffix[:-6] + '.zgroup'
+        if suffix.endswith(".array"):
+            return suffix[:-6] + ".zarray"
+        if suffix.endswith(".group"):
+            return suffix[:-6] + ".zgroup"
         return suffix
 
     def _convert_2_to_3_keys(self, v2key: str) -> str:
@@ -430,17 +445,18 @@ class V2from3Adapter(MutableMapping):
         todo handle special .attribute which is merged with .zarray
         """
         # head of the hierachy is different:
-        if v2key == '.zgroup':
-            return 'meta/root.group'
-        if v2key == '.zarray':
-            return 'meta/root.array'
+        if v2key == ".zgroup":
+            return "meta/root.group"
+        if v2key == ".zarray":
+            return "meta/root.array"
         assert not v2key.startswith(
-            '/'), f"expect keys to not start with slash but does {v2key!r}"
-        if v2key.endswith('.zarray'):
-            return 'meta/root/'+v2key[:-7]+'.array'
-        if v2key.endswith('.zgroup'):
-            return 'meta/root/'+v2key[:-7]+'.group'
-        return 'data/root/'+v2key
+            "/"
+        ), f"expect keys to not start with slash but does {v2key!r}"
+        if v2key.endswith(".zarray"):
+            return "meta/root/" + v2key[:-7] + ".array"
+        if v2key.endswith(".zgroup"):
+            return "meta/root/" + v2key[:-7] + ".group"
+        return "data/root/" + v2key
 
     def __len__(self):
         return len(self._v3store.list())
@@ -455,33 +471,21 @@ class V2from3Adapter(MutableMapping):
 
         items = self._v3store.list_prefix(item3)
         if not items:
-            raise KeyError(
-                f"{key} not found in store (converted key to {item3}")
+            raise KeyError(f"{key} not found in store (converted key to {item3}")
         for _item in self._v3store.list_prefix(item3):
             self._v3store.delete(_item)
 
     def keys(self):
         return [self._convert_3_to_2_keys(k) for k in self._v3store.list()]
 
-    def listdir(self, path=''):
+    def listdir(self, path=""):
         v3path = self._convert_2_to_3_keys(path)
-        if not v3path.endswith('/'):
-            v3path = v3path + '/'
-        ps = [p for p in
-              self._v3store.list_dir(v3path)
-              ]
-        tov2 = [
-            self._convert_3_to_2_keys(p) for p in ps]
+        if not v3path.endswith("/"):
+            v3path = v3path + "/"
+        ps = [p for p in self._v3store.list_dir(v3path)]
+        tov2 = [self._convert_3_to_2_keys(p) for p in ps]
 
-        return [p.split('/')[-1] for p in tov2]
+        return [p.split("/")[-1] for p in tov2]
 
     def __iter__(self):
         return iter(self.keys())
-
-    #def values(self):
-    #    for k in self.keys():
-    #        yield self[k]
-
-    #def items(self):
-    #    for k in self.keys():
-    #        yield k, self[k]
