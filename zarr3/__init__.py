@@ -4,10 +4,11 @@ Zarr spec v3 draft implementation
 
 __version__ = "0.0.1"
 
-from string import ascii_letters, digits
-from .utils import AutoSync
-
 import json
+from collections.abc import MutableMapping
+from string import ascii_letters, digits
+
+from .utils import AutoSync
 
 
 class BaseV3Store(AutoSync):
@@ -58,14 +59,13 @@ class BaseV3Store(AutoSync):
         result = await self._get(key)
         assert isinstance(result, bytes), f"Expected bytes, got {result}"
         if key == "zarr.json":
-            v = json.loads(value.decode())
+            v = json.loads(result.decode())
             assert set(v.keys()) == {
                 "zarr_format",
                 "metadata_encoding",
                 "extensions",
             }, f"v is {v}"
-
-        if key.endswith("/.group"):
+        elif key.endswith("/.group"):
             v = json.loads(result.decode())
             assert set(v.keys()) == {"attributes"}, f"got unexpected keys {v.keys()}"
         return result
@@ -86,10 +86,29 @@ class BaseV3Store(AutoSync):
                 "metadata_encoding",
                 "extensions",
             }, f"v is {v}"
-
-        if key.endswith("/.group"):
+        elif key.endswith(".array"):
             v = json.loads(value.decode())
-            assert set(v.keys()) == {"attributes"}, f"got unexpected keys {v.keys()}"
+            expected = {
+                "shape",
+                "data_type",
+                "chunk_grid",
+                "chunk_memory_layout",
+                "compressor",
+                "fill_value",
+                "extensions",
+                "attributes",
+            }
+            current = set(v.keys())
+            # ets do some conversions.
+            assert (
+                current == expected
+            ), f"{current - expected} extra, {expected- current} missing in {v}"
+
+            if key.endswith(".group"):
+                v = json.loads(value.decode())
+                assert set(v.keys()) == {
+                    "attributes"
+                }, f"got unexpected keys {v.keys()}"
         if not isinstance(value, bytes):
             raise TypeError(f"expected, bytes, or bytesarray, got {type(value)}")
         assert self._valid_path(key)
@@ -258,10 +277,7 @@ class ZarrProtocolV3(AutoSync):
             "eggs": 42,
         }  }
         """
-        await self._store.set(self._g_meta_key(group_path), DEFAULT_GROUP.encode())
-
-
-from collections.abc import MutableMapping
+        await self._store.set(self._g_meta_key(array_path), DEFAULT_ARRAY.encode())
 
 
 class StoreComparer(MutableMapping):
@@ -385,16 +401,16 @@ class V2from3Adapter(MutableMapping):
         assert isinstance(key, str), f"expecting string got {key!r}"
         v3key = self._convert_2_to_3_keys(key)
         res = self._v3store.get(v3key)
-        if v3key == "meta/root.group":
+        if v3key == "zarr.json":
             data = json.loads(res.decode())
             data["zarr_format"] = 2
             res = json.dumps(data, indent=4).encode()
-        elif v3key.endswith("/.group"):
+        elif v3key.endswith(".group"):
             data = json.loads(res.decode())
             data["zarr_format"] = 2
-            if not data["attributes"]:
+            if data.get("attributes"):
                 del data["attributes"]
-            res = json.dumps(data).encode()
+            res = json.dumps(data, indent=4).encode()
         assert isinstance(res, bytes)
         return res
 
@@ -407,6 +423,8 @@ class V2from3Adapter(MutableMapping):
 
         parts = key.split("/")
         v3key = self._convert_2_to_3_keys(key)
+        # todo: we want to keep the .zattr which i sstored in the  group/array file.
+        # so to set, we need to get from the store assign update.
         if v3key == "meta/root.group":
             # todo: this is wrong, the top md document is zarr.json.
             data = json.loads(value.decode())
