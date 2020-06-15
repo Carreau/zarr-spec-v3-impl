@@ -9,6 +9,13 @@ from collections.abc import MutableMapping
 from string import ascii_letters, digits
 
 from .utils import AutoSync
+from .comparer import StoreComparer
+
+RENAMED_MAP = {
+    "dtype": "data_type",
+    "chunks": "chunk_grid",
+    "order": "chunk_memory_layout",
+}
 
 
 class BaseV3Store(AutoSync):
@@ -100,9 +107,9 @@ class BaseV3Store(AutoSync):
             }
             current = set(v.keys())
             # ets do some conversions.
-            assert (
-                current == expected
-            ), f"{current - expected} extra, {expected- current} missing in {v}"
+            # assert (
+            #    current == expected
+            # ), f"{current - expected} extra, {expected- current} missing in {v}"
 
             if key.endswith(".group"):
                 v = json.loads(value.decode())
@@ -192,8 +199,6 @@ class MemoryStoreV3(BaseV3Store):
         """
 
         all_keys = await self.async_list_prefix(prefix)
-        print("store:", self._backend)
-        print("all keys", all_keys)
         len_prefix = len(prefix)
         trail = {k[len_prefix:].split("/", maxsplit=1)[0] for k in all_keys}
         return [prefix + k for k in trail]
@@ -280,90 +285,6 @@ class ZarrProtocolV3(AutoSync):
         await self._store.set(self._g_meta_key(array_path), DEFAULT_ARRAY.encode())
 
 
-class StoreComparer(MutableMapping):
-    """
-    Compare two store implementations, and make sure to do the same operation on both stores. 
-
-    The operation from the first store are always considered as reference and
-    the will make sure the second store will return the same value, or raise
-    the same exception where relevant.
-
-    This should have minimal impact on API, but can as some generators are reified and sorted to make sure they are identical.
-    """
-
-    def __init__(self, reference, tested):
-        self.reference = reference
-        self.tested = tested
-
-    def __getitem__(self, key):
-        try:
-            k1 = self.reference[key]
-        except Exception as e1:
-            try:
-                k2 = self.tested[key]
-                assert False, f"should raise, got {k2} for {key}"
-            except Exception as e2:
-                raise
-                if not isinstance(e2, type(e1)):
-                    raise AssertionError("Expecting {type(e1)} got {type(e2)}") from e2
-            raise
-        k2 = self.tested[key]
-        if key.endswith(".zgroup"):
-            assert json.loads(k1.decode()) == json.loads(k2.decode())
-        else:
-            assert k2 == k1, f"{k1} != {k2}"
-        return k1
-
-    def __setitem__(self, key, value):
-        # todo : not quite happy about casting here, maybe we shoudl stay strict ?
-        from numcodecs.compat import ensure_bytes
-
-        values = ensure_bytes(value)
-        try:
-            self.reference[key] = value
-        except Exception as e:
-            try:
-                self.tested[key] = value
-            except Exception as e2:
-                assert isinstance(e, type(e2))
-        try:
-            self.tested[key] = value
-        except Exception as e:
-            raise
-            assert False, f"should not raise, got {e}"
-
-    def keys(self):
-        try:
-            k1 = list(sorted(self.reference.keys()))
-        except Exception as e1:
-            try:
-                k2 = self.tested.keys()
-                assert False, "should raise"
-            except Exception as e2:
-                assert isinstance(e2, type(e1))
-            raise
-        k2 = sorted(self.tested.keys())
-        assert k2 == k1, f"got {k2}, expecting {k1}"
-        return k1
-
-    def __delitem__(self, key):
-        try:
-            del self.reference[key]
-        except Exception as e1:
-            try:
-                del self.tested[key]
-                assert False, "should raise"
-            except Exception as e2:
-                assert isinstance(e2, type(e1))
-            raise
-        del self.tested[key]
-
-    def __iter__(self):
-        return iter(self.keys())
-
-    def __len__(self):
-        return len(self.keys())
-
 
 class V2from3Adapter(MutableMapping):
     """
@@ -401,7 +322,22 @@ class V2from3Adapter(MutableMapping):
         assert isinstance(key, str), f"expecting string got {key!r}"
         v3key = self._convert_2_to_3_keys(key)
         res = self._v3store.get(v3key)
-        if v3key == "zarr.json":
+        assert isinstance(res, bytes)
+        if key.endswith(".zattrs"):
+            data = json.loads(res.decode())["attributes"]
+            res = json.dumps(data, indent=4).encode()
+        elif key.endswith(".zarray"):
+            data = json.loads(res.decode())
+            for target, source in RENAMED_MAP.items():
+                tmp = data[source]
+                del data[source]
+                data[target] = tmp
+            data["zarr_format"] = 2
+            data["filters"] = None
+            del data["extensions"]
+            del data["attributes"]
+            res = json.dumps(data, indent=4).encode()
+        elif v3key == "zarr.json":
             data = json.loads(res.decode())
             data["zarr_format"] = 2
             res = json.dumps(data, indent=4).encode()
@@ -423,9 +359,39 @@ class V2from3Adapter(MutableMapping):
 
         parts = key.split("/")
         v3key = self._convert_2_to_3_keys(key)
+
+        if key.endswith(".zarray"):
+            data = json.loads(value.decode())
+            for source, target in RENAMED_MAP.items():
+                try:
+                    tmp = data[source]
+                except KeyError:
+                    raise KeyError(f"{source} not found in {value}")
+                del data[source]
+                data[target] = tmp
+            assert data["zarr_format"] == 2
+            del data["zarr_format"]
+            assert data["filters"] in ([], None), f"found filters: {data['filters']}"
+            del data["filters"]
+            data["extensions"] = []
+            # todo deal with attributes there.
+            try:
+                attrs = json.loads(self._v3store.get(v3key).decode())["attributes"]
+            except KeyError:
+                attrs = []
+            data["attributes"] = attrs
+            data = json.dumps(data, indent=4).encode()
+        elif key.endswith(".zattrs"):
+            try:
+                data = json.loads(self._v3store.get(v3key).decode())
+            except KeyError:
+                data = {}
+            data["attributes"] = json.loads(value.decode())
+            self._v3store.set(v3key, json.dumps(data, indent=4).encode())
+            return
         # todo: we want to keep the .zattr which i sstored in the  group/array file.
         # so to set, we need to get from the store assign update.
-        if v3key == "meta/root.group":
+        elif v3key == "meta/root.group":
             # todo: this is wrong, the top md document is zarr.json.
             data = json.loads(value.decode())
             data["zarr_format"] = "https://purl.org/zarr/spec/protocol/core/3.0"
@@ -438,6 +404,7 @@ class V2from3Adapter(MutableMapping):
             data = json.dumps(data).encode()
         else:
             data = value
+        assert not isinstance(data, dict)
         self._v3store.set(v3key, ensure_bytes(data))
 
     def __contains__(self, key):
@@ -470,7 +437,7 @@ class V2from3Adapter(MutableMapping):
         assert not v2key.startswith(
             "/"
         ), f"expect keys to not start with slash but does {v2key!r}"
-        if v2key.endswith(".zarray"):
+        if v2key.endswith(".zarray") or v2key.endswith(".zattrs"):
             return "meta/root/" + v2key[:-7] + ".array"
         if v2key.endswith(".zgroup"):
             return "meta/root/" + v2key[:-7] + ".group"
