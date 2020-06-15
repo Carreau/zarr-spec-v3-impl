@@ -252,7 +252,11 @@ class ZarrProtocolV3(AutoSync):
         metadata = {
             "shape": shape,
             "data_type": dtype,
-            "chunk_grid": {"type": "regular", "chunk_shape": chunk_shape},
+            "chunk_grid": {
+                "type": "regular",
+                "chunk_shape": chunk_shape,
+                "separator": "/",
+            },
             "chunk_memory_layout": "C",
             "compressor": {
                 "codec": "https://none",
@@ -332,6 +336,8 @@ class V2from3Adapter(MutableMapping):
                 tmp = data[source]
                 del data[source]
                 data[target] = tmp
+            del data["chunk_grid"]["separator"]
+
             data["zarr_format"] = 2
             data["filters"] = None
             del data["extensions"]
@@ -359,6 +365,7 @@ class V2from3Adapter(MutableMapping):
 
         parts = key.split("/")
         v3key = self._convert_2_to_3_keys(key)
+        # convert chunk separator from ``.`` to ``/``
 
         if key.endswith(".zarray"):
             data = json.loads(value.decode())
@@ -374,7 +381,7 @@ class V2from3Adapter(MutableMapping):
             assert data["filters"] in ([], None), f"found filters: {data['filters']}"
             del data["filters"]
             data["extensions"] = []
-            # todo deal with attributes there.
+            data["chunk_grid"]["separator"] = "."
             try:
                 attrs = json.loads(self._v3store.get(v3key).decode())["attributes"]
             except KeyError:
@@ -412,7 +419,9 @@ class V2from3Adapter(MutableMapping):
 
     def _convert_3_to_2_keys(self, v3key: str) -> str:
         """
-        todo handle special .attribute which is merged with .zarray
+        todo: 
+         - handle special .attribute which is merged with .zarray/.zgroup
+         - look at the grid separator
         """
         if v3key == "meta/root.group":
             return ".zgroup"
@@ -427,7 +436,10 @@ class V2from3Adapter(MutableMapping):
 
     def _convert_2_to_3_keys(self, v2key: str) -> str:
         """
-        todo handle special .attribute which is merged with .zarray
+        todo:
+         - handle special .attribute which is merged with .zarray/.zgroup
+         - look at the grid separator
+
         """
         # head of the hierachy is different:
         if v2key == ".zgroup":
@@ -464,6 +476,11 @@ class V2from3Adapter(MutableMapping):
         return [self._convert_3_to_2_keys(k) for k in self._v3store.list()]
 
     def listdir(self, path=""):
+        """
+        This_will be wrong as we also need to list meta/prefix, but need to
+        be carefull and use list-prefix in that case with the right optiosn
+        to convert the chunks separators.
+        """
         v3path = self._convert_2_to_3_keys(path)
         if not v3path.endswith("/"):
             v3path = v3path + "/"
