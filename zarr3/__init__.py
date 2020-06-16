@@ -7,13 +7,13 @@ __version__ = "0.0.1"
 import json
 from collections.abc import MutableMapping
 from string import ascii_letters, digits
+from pathlib import Path
 
 from .utils import AutoSync
 from .comparer import StoreComparer
 
 RENAMED_MAP = {
     "dtype": "data_type",
-    "chunks": "chunk_grid",
     "order": "chunk_memory_layout",
 }
 
@@ -139,6 +139,29 @@ class BaseV3Store(AutoSync):
             raise KeyError(key)
 
 
+class V3DirectoryStore(BaseV3Store):
+    def __init__(self, path):
+        self.root = Path(path)
+
+    async def _get(self, key):
+        path = self.root / key
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            raise KeyError(path)
+
+    async def _set(self, key, value):
+        path = self.root / key
+        if not path.parent.exists():
+            path.parent.mkdir(parents=True)
+        return path.write_bytes(value)
+
+    async def async_list(self, key):
+        import os
+
+        return os.listdir(self.root / key)
+
+
 class RedisStore(BaseV3Store):
     def __init__(self):
         """initialisation is in _async initialize
@@ -155,6 +178,7 @@ class RedisStore(BaseV3Store):
 
         self._backend = Redis("redis://localhost/")
 
+    # want to rename this to __await__ ?
     async def async_initialize(self):
         from redio import Redis
 
@@ -289,7 +313,6 @@ class ZarrProtocolV3(AutoSync):
         await self._store.set(self._g_meta_key(array_path), DEFAULT_ARRAY.encode())
 
 
-
 class V2from3Adapter(MutableMapping):
     """
     class to wrap a 3 store and return a V2 interface
@@ -325,9 +348,16 @@ class V2from3Adapter(MutableMapping):
         """
         assert isinstance(key, str), f"expecting string got {key!r}"
         v3key = self._convert_2_to_3_keys(key)
+        if key.endswith(".zattrs"):
+            try:
+                res = self._v3store.get(v3key)
+            except KeyError:
+                v3key = v3key.replace(".array", ".group")
         res = self._v3store.get(v3key)
+
         assert isinstance(res, bytes)
         if key.endswith(".zattrs"):
+            data = json.loads(res.decode())["attributes"]
             data = json.loads(res.decode())["attributes"]
             res = json.dumps(data, indent=4).encode()
         elif key.endswith(".zarray"):
@@ -336,21 +366,19 @@ class V2from3Adapter(MutableMapping):
                 tmp = data[source]
                 del data[source]
                 data[target] = tmp
-            del data["chunk_grid"]["separator"]
+            data["chunks"] = data["chunk_grid"]["chunk_shape"]
+            del data["chunk_grid"]
 
             data["zarr_format"] = 2
             data["filters"] = None
             del data["extensions"]
             del data["attributes"]
             res = json.dumps(data, indent=4).encode()
-        elif v3key == "zarr.json":
+
+        if v3key.endswith(".group") or v3key == "zarr.json":
             data = json.loads(res.decode())
             data["zarr_format"] = 2
-            res = json.dumps(data, indent=4).encode()
-        elif v3key.endswith(".group"):
-            data = json.loads(res.decode())
-            data["zarr_format"] = 2
-            if data.get("attributes"):
+            if data.get("attributes") is not None:
                 del data["attributes"]
             res = json.dumps(data, indent=4).encode()
         assert isinstance(res, bytes)
@@ -376,12 +404,15 @@ class V2from3Adapter(MutableMapping):
                     raise KeyError(f"{source} not found in {value}")
                 del data[source]
                 data[target] = tmp
+            data["chunk_grid"] = {}
+            data["chunk_grid"]["chunk_shape"] = data["chunks"]
+            data["chunk_grid"]["type"] = "rectangular"
+            data["chunk_grid"]["separator"] = "."
             assert data["zarr_format"] == 2
             del data["zarr_format"]
             assert data["filters"] in ([], None), f"found filters: {data['filters']}"
             del data["filters"]
             data["extensions"] = []
-            data["chunk_grid"]["separator"] = "."
             try:
                 attrs = json.loads(self._v3store.get(v3key).decode())["attributes"]
             except KeyError:
@@ -390,9 +421,14 @@ class V2from3Adapter(MutableMapping):
             data = json.dumps(data, indent=4).encode()
         elif key.endswith(".zattrs"):
             try:
+                # try zarray first...
                 data = json.loads(self._v3store.get(v3key).decode())
             except KeyError:
-                data = {}
+                try:
+                    v3key = v3key.replace(".array", ".group")
+                    data = json.loads(self._v3store.get(v3key).decode())
+                except KeyError:
+                    data = {}
             data["attributes"] = json.loads(value.decode())
             self._v3store.set(v3key, json.dumps(data, indent=4).encode())
             return
@@ -473,7 +509,20 @@ class V2from3Adapter(MutableMapping):
             self._v3store.delete(_item)
 
     def keys(self):
-        return [self._convert_3_to_2_keys(k) for k in self._v3store.list()]
+        # TODO: not as stritforward.
+        # we need to actually poke internally at .group/.array to potentially return '.zattrs'
+        # if attribute is set.
+        # it also seem in soem case zattrs is set in arrays even if the rest of the infomation is not set.
+        key = self._v3store.list("")
+        fixed_paths = []
+        for p in key:
+            if p.endswith(".group"):
+                res = self._v3store.get(p)
+                if json.loads(res.decode()).get("attributes"):
+                    fixed_paths.append(".zattrs")
+            fixed_paths.append(self._convert_3_to_2_keys(p))
+
+        return list(set(fixed_paths))
 
     def listdir(self, path=""):
         """
@@ -485,9 +534,15 @@ class V2from3Adapter(MutableMapping):
         if not v3path.endswith("/"):
             v3path = v3path + "/"
         ps = [p for p in self._v3store.list_dir(v3path)]
-        tov2 = [self._convert_3_to_2_keys(p) for p in ps]
+        fixed_paths = []
+        for p in ps:
+            if p == ".group":
+                res = self._v3store.get(path + "/.group")
+                if json.loads(res.decode())["attributes"]:
+                    fixed_paths.append(".zattrs")
+            fixed_paths.append(self._convert_3_to_2_keys(p))
 
-        return [p.split("/")[-1] for p in tov2]
+        return [p.split("/")[-1] for p in fixed_paths]
 
     def __iter__(self):
         return iter(self.keys())

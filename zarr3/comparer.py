@@ -1,4 +1,5 @@
 from collections.abc import MutableMapping
+import json
 
 
 class StoreComparer(MutableMapping):
@@ -29,8 +30,9 @@ class StoreComparer(MutableMapping):
                     raise AssertionError("Expecting {type(e1)} got {type(e2)}") from e2
             raise
         k2 = self.tested[key]
-        if key.endswith(".zgroup"):
-            assert json.loads(k1.decode()) == json.loads(k2.decode())
+        if key.endswith((".zgroup", ".zarray")):
+            j1, j2 = json.loads(k1.decode()), json.loads(k2.decode())
+            assert j1 == j2, f"{j1} != {j2}"
         else:
             assert k2 == k1, f"{k1} != {k2}"
         return k1
@@ -84,3 +86,6 @@ class StoreComparer(MutableMapping):
 
     def __len__(self):
         return len(self.keys())
+
+    def __contains__(self, key):
+        return key in self.reference
