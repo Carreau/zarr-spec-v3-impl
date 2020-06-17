@@ -4,6 +4,7 @@ Zarr spec v3 draft implementation
 
 __version__ = "0.0.1"
 
+import os
 import json
 from collections.abc import MutableMapping
 from string import ascii_letters, digits
@@ -55,7 +56,7 @@ class BaseV3Store(AutoSync):
 
     async def async_get(self, key: str):
         """
-        default implementation of async_get/get that validate the key, and
+        default implementation of async_get/get that validate the key, a
         check that the return value by bytes. rely on `async def _get(key)`
         to be implmented.
 
@@ -75,6 +76,18 @@ class BaseV3Store(AutoSync):
         elif key.endswith("/.group"):
             v = json.loads(result.decode())
             assert set(v.keys()) == {"attributes"}, f"got unexpected keys {v.keys()}"
+        if key.endswith(".array"):
+            try:
+                res = await self._get(key.replace(".array", ".group"))
+                assert False, f"expecting keyerror, got {res}"
+            except KeyError:
+                pass
+        if key.endswith(".group"):
+            try:
+                res = await self._get(key.replace(".group", ".array"))
+                assert False, f"expecting keyerror, got {res}"
+            except KeyError:
+                pass
         return result
 
     async def async_set(self, key: str, value: bytes):
@@ -134,16 +147,21 @@ class BaseV3Store(AutoSync):
         return [k for k in await self.async_list() if k.startswith(prefix)]
 
     async def async_delete(self, key):
+        # TODO: not good in the base.
         deln = await self._backend().delete(key)
         if deln == 0:
             raise KeyError(key)
 
 
 class V3DirectoryStore(BaseV3Store):
+    log = []
+
     def __init__(self, path):
+        self.log.append("init")
         self.root = Path(path)
 
     async def _get(self, key):
+        self.log.append(f"get {key}")
         path = self.root / key
         try:
             return path.read_bytes()
@@ -151,15 +169,23 @@ class V3DirectoryStore(BaseV3Store):
             raise KeyError(path)
 
     async def _set(self, key, value):
+        self.log.append(f"set {key} {value}")
         path = self.root / key
         if not path.parent.exists():
             path.parent.mkdir(parents=True)
         return path.write_bytes(value)
 
-    async def async_list(self, key):
-        import os
+    async def async_list(self):
+        l = []
+        for it in os.walk(self.root):
+            for file in it[2]:
+                l.append(os.path.join(it[0], file)[len(str(self.root)) + 1 :])
+        return l
 
-        return os.listdir(self.root / key)
+    async def async_delete(self, key):
+        self.log.append(f"delete {key}")
+        path = self.root / key
+        os.remove(path)
 
 
 class RedisStore(BaseV3Store):
@@ -407,7 +433,7 @@ class V2from3Adapter(MutableMapping):
             data["chunk_grid"] = {}
             data["chunk_grid"]["chunk_shape"] = data["chunks"]
             data["chunk_grid"]["type"] = "rectangular"
-            data["chunk_grid"]["separator"] = "."
+            data["chunk_grid"]["separator"] = "/"
             assert data["zarr_format"] == 2
             del data["zarr_format"]
             assert data["filters"] in ([], None), f"found filters: {data['filters']}"
@@ -513,7 +539,7 @@ class V2from3Adapter(MutableMapping):
         # we need to actually poke internally at .group/.array to potentially return '.zattrs'
         # if attribute is set.
         # it also seem in soem case zattrs is set in arrays even if the rest of the infomation is not set.
-        key = self._v3store.list("")
+        key = self._v3store.list()
         fixed_paths = []
         for p in key:
             if p.endswith(".group"):
